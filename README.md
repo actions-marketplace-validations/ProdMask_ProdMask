@@ -25,7 +25,7 @@ Find out what a plain copy of your production MySQL or MariaDB database would ca
 
 It knows WordPress and WooCommerce, Magento 2 and Laravel, and works on any MySQL or MariaDB schema. Every change is tested against MySQL 8.4 and MariaDB 11.8. For Magento it handles 2.4, Open Source or Adobe Commerce, with or without a table prefix; its tests use a trimmed 2.4 schema with no prefix, and older releases aren't tested.
 
-Reports name tables, columns, keys and JSON paths, with counts and categories. They never contain the sampled values. Key names can hold data too, such as a user's email address inside a meta key. Those are shown as patterns like `um_email_as_username_*`, one line for all the keys that share the pattern.
+Reports name tables, columns, keys and JSON paths, with counts and categories. They never contain the sampled values. Key names can hold data too, such as a user's email address inside a meta key. Those are shown as patterns like `um_email_as_username_*`, one line for all the keys that share the pattern. A key that reads as a plain word, such as a login, is shown as it is ([which keys are hidden](docs/config.md#keys-the-scan-doesnt-show)).
 
 It runs on your machine and connects only to the database you name. It sends nothing anywhere: no telemetry, no update checks.
 
@@ -77,7 +77,7 @@ go build -o prodmask ./cmd/prodmask
 The image `ghcr.io/prodmask/prodmask` holds the same release, for linux/amd64 and linux/arm64. Pin a version, as you would in CI:
 
 ```bash
-docker run --rm ghcr.io/prodmask/prodmask:0.13.0 version
+docker run --rm ghcr.io/prodmask/prodmask:0.13.2 version
 ```
 
 To reach a database on your own machine:
@@ -90,14 +90,14 @@ Pass the password from your shell with `-e PRODMASK_PASSWORD`, so it isn't typed
 
 ```bash
 PRODMASK_PASSWORD='…' docker run --rm --network host -e PRODMASK_PASSWORD \
-  ghcr.io/prodmask/prodmask:0.13.0 scan --dsn 'mysql://prodmask_ro@127.0.0.1:3306/shop'
+  ghcr.io/prodmask/prodmask:0.13.2 scan --dsn 'mysql://prodmask_ro@127.0.0.1:3306/shop'
 ```
 
 The report goes to standard output. For a file, mount a folder at `/work` and, on Linux, run as yourself so the file is yours:
 
 ```bash
 docker run --rm --network host -e PRODMASK_PASSWORD --user "$(id -u):$(id -g)" -v "$PWD:/work" \
-  ghcr.io/prodmask/prodmask:0.13.0 scan --dsn 'mysql://prodmask_ro@127.0.0.1:3306/shop' \
+  ghcr.io/prodmask/prodmask:0.13.2 scan --dsn 'mysql://prodmask_ro@127.0.0.1:3306/shop' \
   --format markdown --out report.md
 ```
 
@@ -119,7 +119,7 @@ The DSN can be a URL (`mysql://user:pass@host:port/db?tls=true`, or `?socket=/pa
 | `--preset` | `auto` | `none`, `wordpress`, `woocommerce`, `magento2` or `laravel` |
 | `--sample-rows` | 300 | rows sampled per table |
 | `--meta-sample-rows` | 3000 | rows sampled from a key/value table such as `wp_postmeta` that is too big to read whole (see below) |
-| `--no-samples` | | judge column names only; read no rows |
+| `--no-samples` | | judge column names only and sample no rows; the platform checks still read settings rows, unless `--preset none` |
 | `--timeout` | `10s` | server-side limit for each statement |
 | `--verbose` | | also list low-confidence matches, inferred relationships and full evidence |
 
@@ -138,7 +138,7 @@ With `--fail-on high`, the build fails on a high or critical finding, such as a 
 The action runs the same scan in a workflow. Pin it to a release:
 
 ```yaml
-- uses: ProdMask/ProdMask@v0.13.0
+- uses: ProdMask/ProdMask@v0.13.2
   with:
     dsn: ${{ secrets.STAGING_DSN }}
     password: ${{ secrets.STAGING_DB_PASSWORD }}
@@ -157,7 +157,7 @@ The action runs the same scan in a workflow. Pin it to a release:
 To keep the report when a job in a private repository fails, upload it:
 
 ```yaml
-- uses: ProdMask/ProdMask@v0.13.0
+- uses: ProdMask/ProdMask@v0.13.2
   id: prodmask
   with:
     dsn: ${{ secrets.STAGING_DSN }}
@@ -180,7 +180,7 @@ The image also works as a job image, wherever a job runs its steps through a she
 ```yaml
 prodmask:
   image:
-    name: ghcr.io/prodmask/prodmask:0.13.0
+    name: ghcr.io/prodmask/prodmask:0.13.2
     entrypoint: [""]
   script:
     - prodmask scan --fail-on high
@@ -286,6 +286,8 @@ The integration tests build fake WordPress/WooCommerce, Magento 2 and Laravel da
 ```bash
 PRODMASK_TEST_DSN='root:…@tcp(127.0.0.1:3306)/' go test ./...
 ```
+
+With `PRODMASK_TEST_REQUIRE_ALL=1` as well (any value but `0` counts), a test that needs a server fails instead of skipping when `PRODMASK_TEST_DSN` isn't set.
 
 Their findings are compared with the golden files in `pkg/scan/testdata`. After a deliberate change, rewrite them with `go test ./pkg/scan -update`, with `PRODMASK_TEST_DSN` set, and review the diff line by line.
 

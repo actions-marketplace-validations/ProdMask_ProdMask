@@ -13,7 +13,9 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
+	"github.com/ProdMask/ProdMask/internal/testdb"
 	"github.com/ProdMask/ProdMask/pkg/fixture"
+	"github.com/ProdMask/ProdMask/pkg/leak"
 	"github.com/ProdMask/ProdMask/pkg/model"
 	"github.com/ProdMask/ProdMask/pkg/report"
 )
@@ -230,13 +232,38 @@ func TestLeakStatus(t *testing.T) {
 	}
 }
 
+// TestHashSummaryCleansNames checks that what hash lists once it has written
+// the file shows each character of a name from the database that could steer
+// the terminal, and each byte that isn't UTF-8, as ?, and that it lists only
+// what compare will count as not read.
+func TestHashSummaryCleansNames(t *testing.T) {
+	f := &leak.File{
+		Database: "prod\x1b]0;owned\x07\xff",
+		Columns: []leak.FileColumn{
+			{Table: "wp\x1b[2Jusers", Column: "user_email\r", Kind: model.LeakEmail, Values: 2},
+			{Table: "wp_usermeta", Column: "meta_value", MetaKey: "billing_\xe2\x80\xaephone", Kind: model.LeakPhone, Values: 1},
+		},
+		LeftOut: []model.LeakLeftOut{
+			{Location: "logs\xc2\x9b2J.body", Why: "too big\x1b[1m", NotRead: true},
+			{Location: "sessions.data", Why: "allowed"},
+		},
+	}
+	var b bytes.Buffer
+	writeHashSummary(&b, f)
+	want := "Hash file written: 3 values sampled from 2 columns of prod?]0;owned??.\n" +
+		"  wp?[2Jusers.user_email?  " + model.LeakEmail.Label() + "  2\n" +
+		"  wp_usermeta.meta_value[billing_?phone]  " + model.LeakPhone.Label() + "  1\n" +
+		"  logs?2J.body  too big?[1m: compare will count it as not read\n" +
+		"Treat the file as personal data: keep it as you keep production data, and delete it after the check.\n"
+	if got := b.String(); got != want {
+		t.Errorf("the summary is\n%q\nwant\n%q", got, want)
+	}
+}
+
 // TestLeakCheckEndToEnd runs the three verbs as a user would, on fixture
 // databases: a full copy, then a masked one. It needs PRODMASK_TEST_DSN.
 func TestLeakCheckEndToEnd(t *testing.T) {
-	dsn := os.Getenv("PRODMASK_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PRODMASK_TEST_DSN is not set")
-	}
+	dsn := testdb.DSN(t)
 	t.Setenv(keyEnv, "")
 	t.Setenv("PRODMASK_PASSWORD", "")
 	adminCfg, err := mysql.ParseDSN(dsn)

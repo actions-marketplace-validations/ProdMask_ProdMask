@@ -17,8 +17,10 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
+	"github.com/ProdMask/ProdMask/internal/testdb"
 	"github.com/ProdMask/ProdMask/pkg/config"
 	"github.com/ProdMask/ProdMask/pkg/dbconn"
+	"github.com/ProdMask/ProdMask/pkg/detect"
 	"github.com/ProdMask/ProdMask/pkg/fixture"
 	"github.com/ProdMask/ProdMask/pkg/introspect"
 	"github.com/ProdMask/ProdMask/pkg/model"
@@ -39,13 +41,10 @@ import (
 const canary = "zq7canary4x"
 
 // testServer connects to the server in PRODMASK_TEST_DSN as a user that can
-// create databases, or skips the test.
+// create databases, or testdb.DSN skips or fails the test.
 func testServer(t *testing.T) (*sql.DB, *mysql.Config) {
 	t.Helper()
-	dsn := os.Getenv("PRODMASK_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PRODMASK_TEST_DSN is not set")
-	}
+	dsn := testdb.DSN(t)
 	adminCfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +139,9 @@ func TestFixtures(t *testing.T) {
 			checkPlanted(t, platform, &planted, outputs)
 			if platform == "generic" {
 				checkGenericSecrets(t, res)
+			}
+			if platform == "laravel" {
+				checkTypeHidden(t, res, outputs)
 			}
 			checkConfigTables(t, outputs["yml"])
 			if dir := os.Getenv("PRODMASK_TEST_OUT"); dir != "" {
@@ -274,6 +276,30 @@ func checkGeneric(t *testing.T, res *model.Result) {
 			"customer details it finds (key column field_key, value column field_value)\n"} {
 		if !strings.Contains(yml, want) {
 			t.Errorf("the starter config is missing %q:\n%s", want, configTable(yml, "form_entries"))
+		}
+	}
+}
+
+// checkTypeHidden checks that the Laravel fixture's marked type values, URLs
+// that name the orders table at their end, made a link, and that the result
+// and every output show their type only as (type hidden).
+func checkTypeHidden(t *testing.T, res *model.Result, outputs map[string]string) {
+	t.Helper()
+	linked := false
+	for _, r := range res.Relationships {
+		linked = linked || r.ChildTable == "comments" && r.ParentTable == "orders" && r.TypeValue == detect.HiddenType
+	}
+	if !linked {
+		t.Error("no comments → orders link with a hidden type value: the marked type values weren't inferred")
+	}
+	for name, out := range outputs {
+		if strings.Contains(out, fixture.TypeMarker) {
+			t.Errorf("the %s output shows a marked type value", name)
+		}
+	}
+	for _, name := range []string{"txt", "yml"} {
+		if !strings.Contains(outputs[name], detect.HiddenType) {
+			t.Errorf("the %s output doesn't show %s", name, detect.HiddenType)
 		}
 	}
 }
