@@ -43,15 +43,20 @@ func (s *Session) Close() error { return s.DB.Close() }
 // Open connects, checks the server and the user's privileges, and prepares
 // the read-only session.
 func Open(ctx context.Context, cfg *mysql.Config, timeout time.Duration) (*Session, error) {
+	return OpenAs(ctx, cfg, timeout, "")
+}
+
+// OpenAs is Open for a target named by label instead of its address, as
+// DescribeAs renders it: its errors and Server.Address show the label, never
+// cfg's address, and the driver logs nothing. An empty label is Open.
+func OpenAs(ctx context.Context, cfg *mysql.Config, timeout time.Duration, label string) (*Session, error) {
 	cfg = cfg.Clone()
-	// The scanner never needs these, whatever the DSN says.
-	cfg.MultiStatements = false
-	cfg.AllowAllFiles = false
+	quiet(cfg, label)
+	// The session's settings are the probe's alone.
+	note := dropDSNSettings(cfg)
+	// The scanner never needs this, whatever the DSN says. openCheckedPool
+	// sets the options the checks depend on.
 	cfg.ParseTime = false
-	// Bound arguments include key names that can hold personal data; with
-	// interpolation they would be written into the statement text, which
-	// server error messages may quote.
-	cfg.InterpolateParams = false
 	if cfg.ConnectionAttributes == "" {
 		cfg.ConnectionAttributes = "program_name:prodmask"
 	}
@@ -66,18 +71,16 @@ func Open(ctx context.Context, cfg *mysql.Config, timeout time.Duration) (*Sessi
 	}
 
 	s := &Session{Database: cfg.DBName, Timeout: timeout}
-	params, err := s.probe(ctx, cfg)
+	if note != "" {
+		s.warn(note)
+	}
+	params, err := s.probe(ctx, cfg, label)
 	if err != nil {
 		return nil, err
 	}
 
-	if cfg.Params == nil {
-		cfg.Params = map[string]string{}
-	}
-	for k, v := range params {
-		cfg.Params[k] = v
-	}
-	db, err := openPool(cfg)
+	cfg.Params = params
+	db, err := openCheckedPool(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -89,30 +92,29 @@ func Open(ctx context.Context, cfg *mysql.Config, timeout time.Duration) (*Sessi
 	return s, nil
 }
 
+// openPool opens a Snapshot's pool, whose statements the Snapshot's methods
+// check: its own transaction statements are fixed text the rules would
+// refuse.
 func openPool(cfg *mysql.Config) (*sql.DB, error) {
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		return nil, err
 	}
-	db := sql.OpenDB(connector)
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxIdleTime(5 * time.Minute)
-	return db, nil
+	return onePool(connector), nil
 }
 
 // probe opens a throwaway connection to learn the server flavour, which
 // session variables exist, and what the user may do. It returns the session
 // variables every scan connection should set on connect.
-func (s *Session) probe(ctx context.Context, cfg *mysql.Config) (map[string]string, error) {
-	db, err := openPool(cfg)
+func (s *Session) probe(ctx context.Context, cfg *mysql.Config, label string) (map[string]string, error) {
+	db, err := openCheckedPool(cfg)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("connect to %s: %w", Describe(cfg), err)
+		return nil, connectError(cfg, label, err)
 	}
 	defer conn.Close()
 
@@ -124,16 +126,19 @@ func (s *Session) probe(ctx context.Context, cfg *mysql.Config) (map[string]stri
 	if strings.Contains(strings.ToLower(version+" "+comment), "mariadb") {
 		flavor = "mariadb"
 	}
-	s.Server = model.ServerInfo{Flavor: flavor, Version: version, Address: Address(cfg), User: cfg.User}
+	_, address := target(cfg, label)
+	s.Server = model.ServerInfo{Flavor: flavor, Version: version, Address: address, User: cfg.User}
 
-	params := map[string]string{"autocommit": "1", "lock_wait_timeout": "5"}
+	// sql_big_selects: a host with a low max_join_size refuses bigger reads
+	// otherwise, and a DSN's own setting for it is dropped.
+	params := map[string]string{"autocommit": "1", "lock_wait_timeout": "5", "sql_big_selects": "1"}
 	switch {
 	case hasVariable(ctx, conn, "transaction_read_only"):
 		params["transaction_read_only"] = "1"
 	case hasVariable(ctx, conn, "tx_read_only"):
 		params["tx_read_only"] = "1"
 	default:
-		s.warn("the server cannot mark the session read-only; prodmask still only runs SELECT and SHOW statements")
+		s.warn(noReadOnlyWarning)
 	}
 	switch {
 	case flavor == "mariadb" && hasVariable(ctx, conn, "max_statement_time"):
@@ -152,6 +157,10 @@ func (s *Session) probe(ctx context.Context, cfg *mysql.Config) (map[string]stri
 	}
 	return params, nil
 }
+
+// noReadOnlyWarning is the warning for a server with neither
+// transaction_read_only nor tx_read_only.
+const noReadOnlyWarning = "the server cannot mark the session read-only; every statement prodmask sends is still checked to be a read"
 
 func hasVariable(ctx context.Context, conn *sql.Conn, name string) bool {
 	var v sql.NullString
