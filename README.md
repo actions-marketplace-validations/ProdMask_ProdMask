@@ -77,7 +77,7 @@ go build -o prodmask ./cmd/prodmask
 The image `ghcr.io/prodmask/prodmask` holds the same release, for linux/amd64 and linux/arm64. Pin a version, as you would in CI:
 
 ```bash
-docker run --rm ghcr.io/prodmask/prodmask:0.14.0 version
+docker run --rm ghcr.io/prodmask/prodmask:0.15.0 version
 ```
 
 To reach a database on your own machine:
@@ -90,14 +90,14 @@ Pass the password from your shell with `-e PRODMASK_PASSWORD`, so it isn't typed
 
 ```bash
 PRODMASK_PASSWORD='…' docker run --rm --network host -e PRODMASK_PASSWORD \
-  ghcr.io/prodmask/prodmask:0.14.0 scan --dsn 'mysql://prodmask_ro@127.0.0.1:3306/shop'
+  ghcr.io/prodmask/prodmask:0.15.0 scan --dsn 'mysql://prodmask_ro@127.0.0.1:3306/shop'
 ```
 
 The report goes to standard output. For a file, mount a folder at `/work` and, on Linux, run as yourself so the file is yours:
 
 ```bash
 docker run --rm --network host -e PRODMASK_PASSWORD --user "$(id -u):$(id -g)" -v "$PWD:/work" \
-  ghcr.io/prodmask/prodmask:0.14.0 scan --dsn 'mysql://prodmask_ro@127.0.0.1:3306/shop' \
+  ghcr.io/prodmask/prodmask:0.15.0 scan --dsn 'mysql://prodmask_ro@127.0.0.1:3306/shop' \
   --format markdown --out report.md
 ```
 
@@ -156,7 +156,7 @@ With `--fail-on high`, the build fails on a high or critical finding, such as a 
 The action runs the same scan in a workflow. Pin it to a release:
 
 ```yaml
-- uses: ProdMask/ProdMask@v0.14.0
+- uses: ProdMask/ProdMask@v0.15.0
   with:
     dsn: ${{ secrets.STAGING_DSN }}
     password: ${{ secrets.STAGING_DB_PASSWORD }}
@@ -175,7 +175,7 @@ The action runs the same scan in a workflow. Pin it to a release:
 To keep the report when a job in a private repository fails, upload it:
 
 ```yaml
-- uses: ProdMask/ProdMask@v0.14.0
+- uses: ProdMask/ProdMask@v0.15.0
   id: prodmask
   with:
     dsn: ${{ secrets.STAGING_DSN }}
@@ -198,7 +198,7 @@ The image also works as a job image, wherever a job runs its steps through a she
 ```yaml
 prodmask:
   image:
-    name: ghcr.io/prodmask/prodmask:0.14.0
+    name: ghcr.io/prodmask/prodmask:0.15.0
     entrypoint: [""]
   script:
     - prodmask scan --fail-on high
@@ -223,6 +223,16 @@ PRODMASK_PASSWORD='…' prodmask leak-check compare --dsn 'mysql://prodmask_ro@s
 The first step samples the columns `scan` flags on production and writes keyed hashes. Treat that file as personal data. The second reads those columns whole on staging, so it belongs on staging, and reports per column how many sampled values turned up.
 
 A zero isn't proof that none are there. Only a sample is looked for, and only kinds unlikely to match by chance: email addresses, phone numbers, IBANs, national and tax IDs, payment tokens, password hashes and secrets, not names or street addresses. See [docs/leak-check.md](docs/leak-check.md) for the odds, the costs, the exit statuses and the data protection notes.
+
+## Give a coding agent the database
+
+`prodmask mcp` lets a coding agent read one database through prodmask's checks, over the Model Context Protocol. Claude Code, Cursor, Codex and Copilot's coding agent can all start it. Every statement must be one read, and it runs in a read-only session with row and time limits. A login that can change the database or the server is refused. The personal data and secrets prodmask recognises are replaced by tokens; what it doesn't recognise shows as stored.
+
+```bash
+claude mcp add prodmask --env PRODMASK_DSN='mysql://agent:…@127.0.0.1:3306/shop_copy' -- prodmask mcp --copy
+```
+
+Give the agent a login of its own that can only read, and point it at a prodmask Pro copy if you can: with `--copy`, a checked copy shows its masked values as stored. See [docs/coding-agents.md](docs/coding-agents.md) for what it does and doesn't catch, the limits, and the setup for each client.
 
 ## What it does to your database
 
